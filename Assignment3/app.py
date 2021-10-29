@@ -6,9 +6,8 @@ import pygubu
 import tkinter as tk
 import tkinter.ttk as ttk
 from tkinter import messagebox
-
 # local import from "protocol.py"
-from protocol import Protocol
+from protocol import Protocol, User
 
 
 class Assignment3VPN:
@@ -97,6 +96,8 @@ class Assignment3VPN:
         if not self._ValidateConnectionInputs():
             return False
         
+        self.prtcl.SetSessionKey(self.secretEntry.get())
+
         try:
             self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -104,12 +105,14 @@ class Assignment3VPN:
                 self._AppendLog("CONNECTION: Initiating client mode...")
                 self.s.connect((self.hostName.get(), int(self.port.get())))
                 self.conn = self.s
+                self.prtcl._id = User.CLIENT
                 self.receive_thread.start()
                 self._AppendLog("CLIENT: Connection established successfully. You can now send/receive messages.")
             else:
                 self._AppendLog("CONNECTION: Initiating server mode...")
                 self.s.bind((self.hostName.get(), int(self.port.get())))
                 self.s.listen(1)
+                self.prtcl._id = User.SERVER
                 self.server_thread.start()
             return True
         except Exception as e:
@@ -154,7 +157,19 @@ class Assignment3VPN:
                     # Disabling the button to prevent repeated clicks
                     self.secureButton["state"] = "disabled"
                     # Processing the protocol message
-                    self.prtcl.ProcessReceivedProtocolMessage(cipher_text)
+                    auth_msg = cipher_text.decode("utf-8")
+                    print("Authenticate Message by other: {}".format(auth_msg))
+                    session_key, return_message = self.prtcl.ProcessReceivedProtocolMessage(auth_msg)
+
+                    if session_key:
+                        self.prtcl.SetSessionKey(session_key)
+                        # 1-side Authentication was successful when shared key is generated
+                        other_id = User.SERVER.name if self.prtcl._id == User.CLIENT else User.CLIENT.name
+                        self._AppendMessage('You successfully authenticated {}!'.format(other_id))
+                        self._AppendMessage('Your new shared key is {}'.format(self.prtcl._key))
+
+                    if return_message:
+                        self._SendMutualAuthentication(return_message)
 
                 # Otherwise, decrypting and showing the messaage
                 else:
@@ -165,6 +180,10 @@ class Assignment3VPN:
                 self._AppendLog("RECEIVER_THREAD: Error receiving data: {}".format(str(e)))
                 return False
 
+    # Send authentication message without encrypting
+    def _SendMutualAuthentication(self, message):
+        self.conn.send(message.encode())
+        print("Authenticate Message by you: {}".format(message))
 
     # Send data to the other party
     def _SendMessage(self, message):
@@ -180,7 +199,7 @@ class Assignment3VPN:
 
         # TODO: THIS IS WHERE YOU SHOULD IMPLEMENT THE START OF YOUR MUTUAL AUTHENTICATION AND KEY ESTABLISHMENT PROTOCOL, MODIFY AS YOU SEEM FIT
         init_message = self.prtcl.GetProtocolInitiationMessage()
-        self._SendMessage(init_message)
+        self._SendMutualAuthentication(init_message)
 
 
     # Called when SendMessage button is clicked
