@@ -13,6 +13,12 @@ class Protocol:
     # TODO: MODIFY ARGUMENTS AND LOGIC AS YOU SEEM FIT
     def __init__(self):
         self.ecdh = ECDH()
+
+        # Parameters in mutual authentication
+        self._authentication_finished = False
+        self._my_nounce = None
+        self._other_nounce = None
+        self._other_id = None
         pass
 
 
@@ -42,18 +48,22 @@ class Protocol:
     # TODO: IMPLMENET THE LOGIC (CALL SetSessionKey ONCE YOU HAVE THE KEY ESTABLISHED)
     # THROW EXCEPTION IF AUTHENTICATION FAILS
     def ProcessReceivedProtocolMessage(self, message):
-        previous_step = self.VerifyAuthenticationStep(message)
-        msg = json.loads(message)
+        if self._authentication_finished: # If authentication is already done, eaise an exception
+            raise Exception('Mutual authentication is already done!')
 
+        msg = json.loads(message)
         shared_key = ''
         return_message = ''
-        if previous_step == 0:
-            self._other_nounce = msg['nounce']
-            self._other_id = msg['id']
+        if not self._my_nounce and not self._other_nounce: # If neither my nounce nor other nounce is set, should be message 0
+            try: # Verify message 0 is valid
+                self._other_nounce = msg['nounce']
+                self._other_id = msg['id']
+            except Exception:
+                raise Exception(f'Authentication failed! Invalid authentication message: {message}')
 
             # Verify the other side by checking identity. Only SERVER and CLIENT are allowed to send request to each other. 
             if (self._id == User.SERVER and self._other_id != User.CLIENT) or (self._id == User.CLIENT and self._other_id != User.SERVER):
-                raise Exception('Authentication failed veryfying identity after step 0')
+                raise Exception('Authentication failed veryfying identity in message 0')
 
             self._my_nounce = randrange(sys.maxsize)
             message_to_encrypt = {
@@ -67,23 +77,27 @@ class Protocol:
                 'encrypted_message': str(self.EncryptAndProtectMessage(json.dumps(message_to_encrypt)))
             })
 
-        elif previous_step == 1:
-            self._other_nounce = msg['nounce']
-            encrypted_message = msg['encrypted_message']
-            decrypted_message = json.loads(self.DecryptAndVerifyMessage(encrypted_message))
-            decrypted_nounce = decrypted_message['your_nounce']
-            other_id = decrypted_message['id']
+        elif self._my_nounce and not self._other_nounce: # If my nounce is set but not other nounce, should be message 1
+            try: # Verify message 1 is valid
+                self._other_nounce = msg['nounce']
+                encrypted_message = msg['encrypted_message']
+                decrypted_message = json.loads(self.DecryptAndVerifyMessage(encrypted_message))
+                decrypted_my_nounce = decrypted_message['your_nounce']
+                other_id = decrypted_message['id']
+            except Exception:
+                raise Exception(f'Authentication failed! Invalid authentication message: {message}')
 
             # Verify the other side by checking returned nounce
-            if self._my_nounce != decrypted_nounce:
-                raise Exception('Authentication failed veryfying nounce after step 1')
+            if self._my_nounce != decrypted_my_nounce:
+                raise Exception('Authentication failed veryfying my nounce in message 1')
 
             # Verify the other side by checking identity. Encrypted id has to be identical to the id declared before sending message 0
             if other_id != self._other_id:
                 print(f'Other id: {self._other_id}. Received other id: {other_id}')
-                raise Exception('Authentication failed veryfying identity after step 1')
+                raise Exception('Authentication failed veryfying other identity in message 1')
 
             # Passed 1-way authentication here
+            self._authentication_finished = True
             other_public_key = decrypted_message['public_key']
             shared_key = self.ecdh.get_shared_key(other_public_key)
 
@@ -96,22 +110,25 @@ class Protocol:
                 'encrypted_message': str(self.EncryptAndProtectMessage(json.dumps(message_to_encrypt)))
             })
             
-        elif previous_step == 2:
-            encrypted_message = msg['encrypted_message']
-            decrypted_message = json.loads(self.DecryptAndVerifyMessage(encrypted_message))
-            decrypted_nounce = decrypted_message['your_nounce']
-            other_id = decrypted_message['id']
-
+        elif self._my_nounce and self._other_nounce: # If both my nounce and other nounce are set, should be message 2
+            try: # Verify message 2 is valid
+                encrypted_message = msg['encrypted_message']
+                decrypted_message = json.loads(self.DecryptAndVerifyMessage(encrypted_message))
+                decrypted_my_nounce = decrypted_message['your_nounce']
+                other_id = decrypted_message['id']
+            except Exception:
+                raise Exception(f'Authentication failed! Invalid authentication message: {message}')
 
             # Verify the other side by checking returned nounce
-            if self._my_nounce != decrypted_nounce:
-                raise Exception('Authentication failed veryfying nounce at step 2')
+            if self._my_nounce != decrypted_my_nounce:
+                raise Exception('Authentication failed veryfying my nounce in message 2')
             
             # Verify the other side by checking identity. Encrypted id has to be identical to the id provided at step 0.
             if other_id != self._other_id:
-                raise Exception('Authentication failed veryfying identity after step 2')
+                raise Exception('Authentication failed veryfying other identity in message 2')
 
             # Passed mutual authentication here
+            self._authentication_finished = True
             other_public_key = decrypted_message['public_key']
             shared_key = self.ecdh.get_shared_key(other_public_key)
             
@@ -119,20 +136,6 @@ class Protocol:
             raise Exception('Authentication failed!')
         
         return shared_key, return_message
-    
-    # Check and verity which step that a auth message belongs to
-    def VerifyAuthenticationStep(self, message):
-        msg = json.loads(message)
-
-        if 'id' in msg and 'nounce' in msg:
-            return 0
-        if 'nounce' in msg and 'encrypted_message' in msg:
-            return 1
-        if 'encrypted_message' in msg:
-            return 2
-        
-        raise Exception('Authentication failed! Invalid authentication message')
-
 
     # Setting the key for the current session
     # TODO: MODIFY AS YOU SEEM FIT
